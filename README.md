@@ -6,9 +6,9 @@ then verifies and repairs that export. Everything is stdlib-only Python (3.10+ o
 Windows, but nothing here is platform-specific).
 
 This repository is now structured as a proper Python project with:
-- a package-style CLI entry point
+- an installable console entry point
 - environment-based configuration for the token cache and output directory
-- tests for redaction and configuration behavior
+- automated tests covering security, configuration, and export flows
 - no secrets written to source control or exposed in logs
 
 There is no API key or developer waitlist involved: the scripts implement the
@@ -20,11 +20,10 @@ login, granted once in the browser.
 
 | File | Purpose |
 | --- | --- |
-| `evernote_export.py` | Main tool: OAuth login, tool discovery, and the full export. |
+| `evernote_export.py` | Main tool: OAuth login, tool discovery, the full export, and cleanup. |
 | `verify_export.py` | Checks the export for completeness & soundness (local, plus optional live server reconciliation). |
 | `repair_missing.py` | Re-fetches any notes/attachments the export missed. Safe to re-run. |
-| `evernote-export.log` | Captured output of the last export run (for reference). |
-| `evernote-export/` | The export output (see layout below). |
+| `evernote-export/` | Default export output location (override with `EVERNOTE_EXPORT_DIR`). |
 
 `verify_export.py` and `repair_missing.py` both `import evernote_export`, so all
 three must stay in the same directory.
@@ -37,6 +36,7 @@ required — the venv just keeps the interpreter isolated.
 ```powershell
 python -m venv venv
 .\venv\Scripts\Activate.ps1
+python -m pip install -e .
 ```
 
 ## Usage
@@ -84,9 +84,19 @@ The cleanup command removes everything under the configured output directory
 attachments). It is useful when you want to start a fresh export without
 manually deleting files from disk.
 
+## Configuration
+
+The following environment variables override the defaults:
+
+- `EVERNOTE_MCP_TOKEN_FILE`: path to the cached OAuth token JSON file
+- `EVERNOTE_EXPORT_DIR`: directory where the export is written
+
+If unset, the token cache defaults to `~/.evernote-mcp-token.json` and the export
+output defaults to `./evernote-export/` under the repository root.
+
 ## Output layout
 
-Everything lands under `evernote-export/`:
+Everything lands under the configured output directory (default: `./evernote-export/`):
 
 ```
 evernote-export/
@@ -94,12 +104,9 @@ evernote-export/
     notebooks.json          full notebook list (incl. stacks)
     tags.json               flat tag list as returned by the server
     tag-hierarchy.json      tags + reconstructed parent/child tree + path strings
-    tag-tree.md             human-readable tag tree
     notes-index.json        every note's id/title/notebook (the enumeration cache)
     _done.txt               ledger of note ids fully exported (drives restart)
     _tag_nodes.json         persisted tag graph (drives restart)
-    unreadable-notes.json   notes the server would not return
-    missing-attachments.json attachments that could not be fetched
   <stack>/<notebook>/<title>-<id>.enex    one valid ENEX per note
   <stack>/<notebook>/<title>-<id>.json    full structured metadata sidecar (lossless)
   <stack>/<notebook>/<title>-<id>_attachments/<hash8>_<name>   attachment bytes
@@ -123,8 +130,7 @@ flattens tags — the hierarchy lives in `tag-hierarchy.json`).
   silently missing notes. The result is cached to `notes-index.json` — delete that
   file to force re-enumeration.
 - **Restartable.** Completed note ids are appended to `_manifest/_done.txt`, so a
-  re-run skips finished notes and resumes where it stopped. (The last run, per
-  `evernote-export.log`, exported 1489 notes + 6296 attachments with 1 failure.)
+  re-run skips finished notes and resumes where it stopped.
 - **Tag hierarchy** is rebuilt by aggregating `parentId` edges seen across
   individual `get_note` results, then written as both a flat map, path strings, and
   a nested tree.
