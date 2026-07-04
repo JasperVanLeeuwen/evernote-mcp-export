@@ -1,0 +1,12 @@
+# Python virtual environments
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+
+# Personal Evernote export output — not for version control
+evernote-export/
+
+# Generated artifacts
+*.log
