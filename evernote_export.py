@@ -33,6 +33,7 @@ import json
 import os
 import re
 import secrets
+import shutil
 import sys
 import threading
 import time
@@ -50,9 +51,21 @@ CALLBACK_PORT  = 8765
 REDIRECT_URI   = f"http://localhost:{CALLBACK_PORT}/callback"
 SCOPE          = "read"
 PROTOCOL_VER   = "2025-06-18"
-TOKEN_FILE     = os.path.join(os.path.expanduser("~"), ".evernote-mcp-token.json")
-OUT_DIR        = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evernote-export")
+DEFAULT_TOKEN_FILE = os.path.join(os.path.expanduser("~"), ".evernote-mcp-token.json")
+DEFAULT_OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "evernote-export")
 CLIENT_NAME    = "evernote-export-script"
+
+
+def get_token_file():
+    return os.environ.get("EVERNOTE_MCP_TOKEN_FILE", DEFAULT_TOKEN_FILE)
+
+
+def get_output_dir():
+    return os.environ.get("EVERNOTE_EXPORT_DIR", DEFAULT_OUTPUT_DIR)
+
+
+TOKEN_FILE = get_token_file()
+OUT_DIR = get_output_dir()
 
 # Rate limiting: throttle outbound MCP requests and back off on 429/5xx.
 RATE_LIMIT_RPS = 4                      # max requests/second to the server
@@ -88,7 +101,7 @@ def _http(method, url, *, headers=None, data=None, form=None, json_body=None):
 def _get_json(url):
     status, _, body = _http("GET", url)
     if status != 200:
-        raise SystemExit(f"GET {url} -> {status}: {body[:300]!r}")
+        raise SystemExit(f"GET {url} -> {status}: {_safe_body(body)[:300]!r}")
     return json.loads(body)
 
 
@@ -97,6 +110,33 @@ def _get_json(url):
 # ---------------------------------------------------------------------------
 def _b64url(b):
     return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def redact_sensitive_text(text):
+    if not text:
+        return ""
+    if isinstance(text, (bytes, bytearray)):
+        text = bytes(text).decode("utf-8", "replace")
+    pattern = re.compile(
+        r"(?i)\b(access_token|refresh_token|token|code_verifier|client_secret|code)\b\s*[:=]\s*([^\s,;]+)"
+    )
+    return pattern.sub(lambda m: f"{m.group(1)}=<redacted>", text)
+
+
+def _safe_body(body, maxlen=400):
+    if body is None:
+        return ""
+    if isinstance(body, (bytes, bytearray)):
+        body = bytes(body).decode("utf-8", "replace")
+    return redact_sensitive_text(body)[:maxlen]
+
+
+def _write_json_file(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(data, handle)
+    if os.name != "nt":
+        os.chmod(path, 0o600)
 
 
 def discover_auth_server():
@@ -122,7 +162,7 @@ def register_client(meta):
     }
     status, _, resp = _http("POST", meta["registration_endpoint"], json_body=body)
     if status not in (200, 201):
-        raise SystemExit(f"Dynamic client registration failed {status}: {resp[:400]!r}")
+        raise SystemExit(f"Dynamic client registration failed {status}: {_safe_body(resp)[:400]!r}")
     return json.loads(resp)["client_id"]
 
 
@@ -184,20 +224,21 @@ def do_login():
         "code_verifier": verifier,
     })
     if status != 200:
-        raise SystemExit(f"Token exchange failed {status}: {resp[:400]!r}")
+        raise SystemExit(f"Token exchange failed {status}: {_safe_body(resp)[:400]!r}")
     tok = json.loads(resp)
     tok["client_id"] = client_id
     tok["token_endpoint"] = meta["token_endpoint"]
     tok["expires_at"] = time.time() + tok.get("expires_in", 3600) - 60
-    with open(TOKEN_FILE, "w") as f:
-        json.dump(tok, f)
-    print(f"Logged in. Token cached at {TOKEN_FILE}")
+    token_path = get_token_file()
+    _write_json_file(token_path, tok)
+    print(f"Logged in. Token cached at {token_path}")
 
 
 def get_access_token():
-    if not os.path.exists(TOKEN_FILE):
+    token_path = get_token_file()
+    if not os.path.exists(token_path):
         raise SystemExit("Not logged in. Run:  python evernote_export.py login")
-    with open(TOKEN_FILE) as f:
+    with open(token_path, encoding="utf-8") as f:
         tok = json.load(f)
     if time.time() < tok.get("expires_at", 0):
         return tok["access_token"]
@@ -214,18 +255,18 @@ def _refresh_token(tok):
         "scope": SCOPE,
     })
     if status != 200:
-        raise SystemExit(f"Refresh failed {status}: {resp[:300]!r}. Run `login` again.")
+        raise SystemExit(f"Refresh failed {status}: {_safe_body(resp)[:300]!r}. Run `login` again.")
     new = json.loads(resp)
     tok.update(new)  # picks up rotated refresh_token if the server rotates it
     tok["expires_at"] = time.time() + new.get("expires_in", 3600) - 60
-    with open(TOKEN_FILE, "w") as f:
-        json.dump(tok, f)
+    token_path = get_token_file()
+    _write_json_file(token_path, tok)
     return tok["access_token"]
 
 
 def refresh_access_token():
     """Force a refresh from the cached token file; returns a new access token."""
-    with open(TOKEN_FILE) as f:
+    with open(get_token_file(), encoding="utf-8") as f:
         tok = json.load(f)
     return _refresh_token(tok)
 
@@ -318,7 +359,7 @@ class MCP:
         if sid:
             self.session_id = sid
         if status >= 400:
-            raise SystemExit(f"MCP {method} -> {status}: {body[:400]!r}")
+            raise SystemExit(f"MCP {method} -> {status}: {_safe_body(body)[:400]!r}")
         if notify:
             return None
         parsed = self._parse(headers, body)
@@ -424,7 +465,7 @@ def _xml(s):
 
 
 def _load_done():
-    p = os.path.join(OUT_DIR, DONE_FILE)
+    p = os.path.join(get_output_dir(), DONE_FILE)
     if not os.path.exists(p):
         return set()
     with open(p, encoding="utf-8") as f:
@@ -432,12 +473,12 @@ def _load_done():
 
 
 def _mark_done(gid):
-    with open(os.path.join(OUT_DIR, DONE_FILE), "a", encoding="utf-8") as f:
+    with open(os.path.join(get_output_dir(), DONE_FILE), "a", encoding="utf-8") as f:
         f.write(gid + "\n")
 
 
 def _load_tag_nodes():
-    p = os.path.join(OUT_DIR, TAGNODES_FILE)
+    p = os.path.join(get_output_dir(), TAGNODES_FILE)
     if os.path.exists(p):
         with open(p, encoding="utf-8") as f:
             return json.load(f)
@@ -487,9 +528,10 @@ def _download_attachments(mcp, note, folder, base):
 
 
 def do_export():
+    out_dir = get_output_dir()
     mcp = MCP(get_access_token())
     mcp.initialize()
-    os.makedirs(os.path.join(OUT_DIR, "_manifest"), exist_ok=True)
+    os.makedirs(os.path.join(out_dir, "_manifest"), exist_ok=True)
 
     done = _load_done()             # note ids already fully exported
     tag_nodes = _load_tag_nodes()   # persisted across restarts -> full hierarchy
@@ -524,7 +566,7 @@ def do_export():
     # 3. Enumerate notes PER NOTEBOOK. The server caps global search_notes paging
     #    at ~1000 results, so a single empty query misses notes; paging within each
     #    notebook (nbGuid:"...") avoids the cap. Cached so restarts skip this.
-    idx_path = os.path.join(OUT_DIR, "_manifest", "notes-index.json")
+    idx_path = os.path.join(out_dir, "_manifest", "notes-index.json")
     if os.path.exists(idx_path):
         with open(idx_path, encoding="utf-8") as f:
             notes_index = json.load(f)
@@ -580,7 +622,7 @@ def do_export():
             nb_gid = note.get("notebookId") or note.get("notebookGuid")
             meta = nb_map.get(nb_gid, {"label": "_unknown_notebook", "stack": None})
             stack = _safe(meta["stack"]) if meta["stack"] else "_no_stack"
-            folder = os.path.join(OUT_DIR, stack, _safe(meta["label"]))
+            folder = os.path.join(out_dir, stack, _safe(meta["label"]))
             os.makedirs(folder, exist_ok=True)
             base = f"{_safe(note.get('title','Untitled'))}-{gid[:8]}"
             with open(os.path.join(folder, base + ".enex"), "w", encoding="utf-8") as f:
@@ -622,7 +664,7 @@ def do_export():
     print(f"\nTag hierarchy: {len(tag_nodes)} tags, {with_parent} with a parent "
           f"-> _manifest/tag-hierarchy.json")
     print(f"Done. Written={written} Failed={failed} Attachments={attach} "
-          f"(total exported={len(done)})\nOutput: {OUT_DIR}")
+          f"(total exported={len(done)})\nOutput: {out_dir}")
 
 
 def _build_tree(nodes):
@@ -643,8 +685,24 @@ def _build_tree(nodes):
 
 
 def _dump(rel, obj):
-    with open(os.path.join(OUT_DIR, rel), "w", encoding="utf-8") as f:
+    with open(os.path.join(get_output_dir(), rel), "w", encoding="utf-8") as f:
         json.dump(obj, f, indent=2, ensure_ascii=False)
+
+
+def do_cleanup():
+    """Remove all exported data under the configured output directory."""
+    out_dir = get_output_dir()
+    if not os.path.exists(out_dir):
+        print(f"Cleanup: output dir not found: {out_dir}")
+        return
+
+    for entry in os.listdir(out_dir):
+        path = os.path.join(out_dir, entry)
+        if os.path.isdir(path) and not os.path.islink(path):
+            shutil.rmtree(path)
+        else:
+            os.remove(path)
+    print(f"Removed exported data from {out_dir}")
 
 
 # ---------------------------------------------------------------------------
@@ -661,6 +719,8 @@ def main():
         do_tools()
     elif cmd == "export":
         do_export()
+    elif cmd == "cleanup":
+        do_cleanup()
     else:
         print(__doc__)
         sys.exit(1)

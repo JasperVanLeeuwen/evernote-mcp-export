@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "evernote-mcp-export"
+version = "0.1.0"
+description = "Export Evernote notes through the official MCP server"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "evernote-mcp-export contributors"}]
+license = {text = "MIT"}
+dependencies = []
+
+[project.scripts]
+evernote-export = "evernote_export:main"
+
+[tool.setuptools]
+py-modules = ["evernote_export"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

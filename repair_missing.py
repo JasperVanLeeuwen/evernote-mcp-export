@@ -17,8 +17,9 @@ import evernote_export as E
 def main():
     mcp = E.MCP(E.get_access_token())
     mcp.initialize()
-    nbs = json.load(open(os.path.join(E.OUT_DIR, "_manifest", "notebooks.json"),
-                        encoding="utf-8"))
+    with open(os.path.join(E.OUT_DIR, "_manifest", "notebooks.json"),
+              encoding="utf-8") as handle:
+        nbs = json.load(handle)
     nb_map = {nb.get("notebookId") or nb.get("guid"):
               {"label": nb.get("label"), "stack": nb.get("stack")} for nb in nbs}
 
@@ -26,7 +27,8 @@ def main():
                                        recursive=True) if "_manifest" not in p]
     disk = {}
     for p in json_files:
-        d = json.load(open(p, encoding="utf-8"))
+        with open(p, encoding="utf-8") as handle:
+            d = json.load(handle)
         disk[d.get("id") or d.get("noteId")] = (p, d)
     disk_ids = set(disk)
 

@@ -2,8 +2,14 @@
 
 A small, dependency-free toolkit that exports an entire Evernote account to the
 local disk through the **official Evernote MCP server** (`https://mcp.evernote.com/mcp`),
-then verifies and repairs that export. Everything is stdlib-only Python (3.14 on
+then verifies and repairs that export. Everything is stdlib-only Python (3.10+ on
 Windows, but nothing here is platform-specific).
+
+This repository is now structured as a proper Python project with:
+- a package-style CLI entry point
+- environment-based configuration for the token cache and output directory
+- tests for redaction and configuration behavior
+- no secrets written to source control or exposed in logs
 
 There is no API key or developer waitlist involved: the scripts implement the
 MCP OAuth 2.1 flow the server advertises (Dynamic Client Registration +
@@ -35,6 +41,16 @@ python -m venv venv
 
 ## Usage
 
+You can run the project either as a console script or directly through the module:
+
+```powershell
+.
+venv\Scripts\Activate.ps1
+evernote-export login
+# or
+python evernote_export.py login
+```
+
 Run in order:
 
 ```powershell
@@ -55,10 +71,18 @@ python verify_export.py --server   # also reconcile counts against the live acco
 
 # 5. If verify reports anything missing, repair it (re-runnable).
 python repair_missing.py
+
+# 6. Remove all generated export data from the configured output directory.
+python evernote_export.py cleanup
 ```
 
 Flag: `python evernote_export.py export --no-attachments` skips downloading
 attachment bytes (metadata is still recorded).
+
+The cleanup command removes everything under the configured output directory
+(including `_manifest/`, exported `.enex`/`.json` files, and downloaded
+attachments). It is useful when you want to start a fresh export without
+manually deleting files from disk.
 
 ## Output layout
 
