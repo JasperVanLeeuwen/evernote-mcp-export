@@ -7,6 +7,16 @@ __pycache__/
 
 # Personal Evernote export output — not for version control
 evernote-export/
+# Converted output (HTML, etc.) — also personal data
+evernote-export-html/
 
 # Generated artifacts
 *.log
+
+# Build / packaging
+*.egg-info/
+
+# Coverage
+.coverage
+htmlcov/
+*,cover

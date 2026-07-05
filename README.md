@@ -23,10 +23,12 @@ login, granted once in the browser.
 | `evernote_export.py` | Main tool: OAuth login, tool discovery, the full export, and cleanup. |
 | `verify_export.py` | Checks the export for completeness & soundness (local, plus optional live server reconciliation). |
 | `repair_missing.py` | Re-fetches any notes/attachments the export missed. Safe to re-run. |
+| `convert_export.py` | Converts the export into other formats (currently HTML). Offline, no auth. |
 | `evernote-export/` | Default export output location (override with `EVERNOTE_EXPORT_DIR`). |
+| `evernote-export-html/` | Default HTML conversion output (override with `EVERNOTE_HTML_DIR`). |
 
-`verify_export.py` and `repair_missing.py` both `import evernote_export`, so all
-three must stay in the same directory.
+`verify_export.py`, `repair_missing.py`, and `convert_export.py` all
+`import evernote_export`, so they must stay in the same directory.
 
 ## Setup
 
@@ -72,7 +74,11 @@ python verify_export.py --server   # also reconcile counts against the live acco
 # 5. If verify reports anything missing, repair it (re-runnable).
 python repair_missing.py
 
-# 6. Remove all generated export data from the configured output directory.
+# 6. (Optional) Convert the export to a browsable HTML tree.
+python convert_export.py html            # -> ./evernote-export-html/
+python convert_export.py html --index    # also write per-notebook + root index.html
+
+# 7. Remove all generated export data from the configured output directory.
 python evernote_export.py cleanup
 ```
 
@@ -90,9 +96,11 @@ The following environment variables override the defaults:
 
 - `EVERNOTE_MCP_TOKEN_FILE`: path to the cached OAuth token JSON file
 - `EVERNOTE_EXPORT_DIR`: directory where the export is written
+- `EVERNOTE_HTML_DIR`: directory where the HTML conversion is written
 
-If unset, the token cache defaults to `~/.evernote-mcp-token.json` and the export
-output defaults to `./evernote-export/` under the repository root.
+If unset, the token cache defaults to `~/.evernote-mcp-token.json`, the export
+output defaults to `./evernote-export/`, and the HTML conversion defaults to
+`./evernote-export-html/`, all under the repository root.
 
 ## Output layout
 
@@ -115,6 +123,44 @@ evernote-export/
 Notes in no stack go under `_no_stack/`. The `.json` sidecar is the lossless
 record; the `.enex` is a valid, importable Evernote export (note that ENEX
 flattens tags — the hierarchy lives in `tag-hierarchy.json`).
+
+## Convert to other formats
+
+`convert_export.py` reads the lossless per-note `.json` sidecars and writes a
+**separate, self-contained output tree** in the target format. It runs entirely
+offline — no login or network is needed, since conversion is a pure local
+transform of what `export` already downloaded.
+
+```powershell
+python convert_export.py html            # convert every note -> HTML
+python convert_export.py html --index    # also write per-notebook + root index.html
+python convert_export.py html --force    # re-convert even if the .html is up-to-date
+```
+
+HTML output mirrors the source layout under `./evernote-export-html/` (override
+with `EVERNOTE_HTML_DIR`):
+
+```
+evernote-export-html/
+  <stack>/<notebook>/<title>-<id>.html                        one self-contained HTML per note
+  <stack>/<notebook>/<title>-<id>_attachments/<hash8>_<name>  copied attachment bytes
+  <stack>/<notebook>/index.html                               (with --index) per-notebook index
+  index.html                                                  (with --index) root index
+```
+
+Each note becomes a standalone HTML page with a header (title, created/updated
+dates, tags, and source URL when present). Inline Evernote objects are
+translated: images (`<en-media>` of an image type) render as `<img>`, other
+attachments (PDFs, etc.) render as download links, and checkboxes (`<en-todo>`)
+render as disabled checkboxes. Attachments are **copied** into the HTML tree and
+linked relatively, so the whole `evernote-export-html/` folder can be zipped and
+shared as-is. Re-runs skip notes whose HTML is already up-to-date (use `--force`
+to override).
+
+Like the source export, the converted output is personal data and is git-ignored.
+The conversion is format-pluggable (a small `FORMATS` registry in
+`convert_export.py`), so additional targets — e.g. Markdown — can be added
+alongside `html` without changing the driver.
 
 ## How it works (notes for future maintenance)
 
